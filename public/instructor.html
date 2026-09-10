@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Create Attendance Session</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background:#f4f5f7; margin:0; display:flex; min-height:100vh; align-items:center; justify-content:center; }
+  .card { background:#fff; padding:32px; border-radius:14px; box-shadow:0 2px 12px rgba(0,0,0,0.08); width:92%; max-width:460px; }
+  h2 { margin-top:0; }
+  label { display:block; margin:14px 0 6px; font-size:14px; color:#444; }
+  input, textarea { width:100%; padding:10px 12px; border:1px solid #ccc; border-radius:8px; font-size:15px; box-sizing:border-box; font-family:inherit; }
+  textarea { height:90px; resize:vertical; }
+  button { margin-top:20px; width:100%; padding:12px; border:none; border-radius:8px; background:#2563eb; color:#fff; font-size:16px; font-weight:600; cursor:pointer; }
+  .hint { font-size:12px; color:#777; margin-top:4px; }
+  .result { margin-top:20px; padding:16px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:10px; word-break:break-word; }
+  .result a { color:#2563eb; font-weight:600; }
+  code { background:#eee; padding:2px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>Create Attendance Session</h2>
+  <form id="f">
+    <label>Class / Session name</label>
+    <input name="name" required placeholder="e.g. CS101 - Sept 9">
+    <label>Duration (minutes)</label>
+    <input name="durationMinutes" type="number" min="1" value="3" required>
+    <button type="submit">Create Session</button>
+  </form>
+  <div id="out"></div>
+</div>
+<script>
+const f = document.getElementById('f');
+const out = document.getElementById('out');
+f.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(f);
+  const body = { name: fd.get('name'), durationMinutes: Number(fd.get('durationMinutes')) };
+  const r = await fetch('/api/sessions', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  const j = await r.json();
+  if (r.ok) {
+    const displayUrl = `/display.html?sessionId=${j.sessionId}&adminKey=${j.adminKey}`;
+    out.innerHTML = `<div class="result">
+      <p><strong>Session created!</strong></p>
+      <p>Open this link on the classroom screen (keep it private — it controls the session):</p>
+      <p><a href="${displayUrl}" target="_blank">${location.origin}${displayUrl}</a></p>
+      <p class="hint">Admin key: <code>${j.adminKey}</code> — save this if you want to re-open the display or export results later.</p>
+    </div>`;
+  } else {
+    out.innerHTML = `<div class="result" style="background:#fef2f2;border-color:#fecaca;">${j.error}</div>`;
+  }
+});
+</script>
+</body>
+</html>

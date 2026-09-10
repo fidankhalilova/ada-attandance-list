@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scan to Mark Attendance</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background:#111827; color:#fff; margin:0; min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; }
+  h1 { font-weight:600; margin-bottom:4px; }
+  .sub { color:#9ca3af; margin-bottom:24px; }
+  #qrBox { background:#fff; padding:20px; border-radius:16px; display:inline-block; }
+  #qrBox img { width:320px; height:320px; display:block; }
+  .timer { margin-top:20px; font-size:20px; color:#93c5fd; font-variant-numeric: tabular-nums; }
+  .count { margin-top:8px; color:#6ee7b7; font-size:16px; }
+  .ended { font-size:28px; color:#f87171; }
+  .bar-bg { width:320px; height:6px; background:#374151; border-radius:3px; margin-top:14px; overflow:hidden; }
+  .bar { height:100%; background:#3b82f6; transition:width 1s linear; }
+</style>
+</head>
+<body>
+  <h1 id="title">Scan to Mark Attendance</h1>
+  <div class="sub">QR code refreshes every 30 seconds — a screenshot won't work after that</div>
+  <div id="qrBox"><img id="qrImg" src="" alt="QR code"></div>
+  <div class="bar-bg"><div class="bar" id="bar" style="width:100%"></div></div>
+  <div class="timer" id="timer"></div>
+  <div class="count" id="count"></div>
+  <a id="downloadBtn" href="#" style="display:none; margin-top:24px; background:#10b981; color:#fff; text-decoration:none; padding:12px 24px; border-radius:8px; font-weight:600;">Download Excel</a>
+
+<script>
+const params = new URLSearchParams(location.search);
+const sessionId = params.get('sessionId');
+const adminKey = params.get('adminKey');
+const qrImg = document.getElementById('qrImg');
+const timerEl = document.getElementById('timer');
+const countEl = document.getElementById('count');
+const bar = document.getElementById('bar');
+const titleEl = document.getElementById('title');
+const downloadBtn = document.getElementById('downloadBtn');
+downloadBtn.href = `/api/sessions/${sessionId}/export?adminKey=${adminKey}`;
+downloadBtn.style.display = 'inline-block';
+
+if (!sessionId || !adminKey) {
+  document.body.innerHTML = '<h1 class="ended">Missing session info</h1>';
+} else {
+  let secondsLeft = 30;
+
+  async function refresh() {
+    const r = await fetch(`/api/sessions/${sessionId}/token?adminKey=${adminKey}`);
+    const j = await r.json();
+    if (j.ended) {
+      titleEl.textContent = 'Attendance Closed';
+      document.getElementById('qrBox').style.display = 'none';
+      timerEl.textContent = '';
+      bar.style.display = 'none';
+      clearInterval(tickHandle);
+      updateCount();
+      return;
+    }
+    qrImg.src = j.qr;
+    secondsLeft = j.expiresInSeconds;
+  }
+
+  function tick() {
+    secondsLeft--;
+    if (secondsLeft <= 0) {
+      refresh();
+    } else {
+      timerEl.textContent = `New code in ${secondsLeft}s`;
+      bar.style.width = (secondsLeft / 30 * 100) + '%';
+    }
+  }
+
+  async function updateCount() {
+    const r = await fetch(`/api/sessions/${sessionId}/stats?adminKey=${adminKey}`);
+    if (!r.ok) return;
+    const j = await r.json();
+    countEl.textContent = `${j.count} student(s) checked in`;
+  }
+
+  refresh();
+  updateCount();
+  const tickHandle = setInterval(tick, 1000);
+  setInterval(updateCount, 4000);
+}
+</script>
+</body>
+</html>
