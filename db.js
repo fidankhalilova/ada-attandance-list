@@ -1,20 +1,16 @@
-// Lightweight JSON-file-backed store. No native compilation required —
-// this avoids the Python/Visual-Studio build-tools headache that
-// better-sqlite3 (and other native modules) can cause on Windows.
-// Fine for classroom-scale usage (tens to low hundreds of submissions per session).
-
 const fs = require('fs');
 const path = require('path');
 
-const DATA_DIR = path.join(__dirname, 'data');
+// Memory store for Vercel / serverless runtime
+const memoryStore = { sessions: {}, tokens: {}, submissions: {} };
+
+const isVercel = Boolean(process.env.VERCEL);
+const DATA_DIR = path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'attendance.json');
 
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-
 function load() {
-  if (!fs.existsSync(DB_FILE)) {
-    return { sessions: {}, tokens: {}, submissions: {} };
-  }
+  if (isVercel) return memoryStore;
+  if (!fs.existsSync(DB_FILE)) return { sessions: {}, tokens: {}, submissions: {} };
   try {
     return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
   } catch (e) {
@@ -25,7 +21,13 @@ function load() {
 let state = load();
 
 function save() {
-  fs.writeFileSync(DB_FILE, JSON.stringify(state));
+  if (isVercel) return; // Skip disk writes on Vercel
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(DB_FILE, JSON.stringify(state));
+  } catch (err) {
+    console.warn('File write skipped:', err.message);
+  }
 }
 
 const db = {
@@ -69,8 +71,7 @@ const db = {
         s => s.sessionId === sub.sessionId && s.studentId === sub.studentId
       );
       if (dup) {
-        const err = new Error('DUPLICATE');
-        throw err;
+        throw new Error('DUPLICATE');
       }
       state.submissions[sub.id] = sub;
       save();

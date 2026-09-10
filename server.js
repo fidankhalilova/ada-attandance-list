@@ -5,6 +5,7 @@ const QRCode = require('qrcode');
 const ExcelJS = require('exceljs');
 const cookieParser = require('cookie-parser');
 const { v4: uuidv4 } = require('uuid');
+const db = require('./db');
 
 // ---- Database Initialization ----
 // Vercel serverless functions run in a read-only environment.
