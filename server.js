@@ -5,21 +5,75 @@ const QRCode = require('qrcode');
 const ExcelJS = require('exceljs');
 const cookieParser = require('cookie-parser');
 const { v4: uuidv4 } = require('uuid');
-const db = require('./db');
+
+// ---- Safe Database Initialization ----
+let db;
+try {
+  db = require('./db');
+} catch (err) {
+  console.warn('Custom db.js failed to load. Falling back to in-memory store for serverless compatibility.');
+
+  const sessions = new Map();
+  const tokens = new Map();
+  const submissions = [];
+
+  db = {
+    sessions: {
+      create: (s) => sessions.set(s.id, s),
+      get: (id) => sessions.get(id) || null,
+    },
+    tokens: {
+      create: (t) => tokens.set(t.token, t),
+      get: (tStr) => tokens.get(tStr) || null,
+      update: (tStr, data) => {
+        const existing = tokens.get(tStr);
+        if (existing) tokens.set(tStr, { ...existing, ...data });
+      },
+      latestForSession: (sessionId) => {
+        const matching = Array.from(tokens.values()).filter(t => t.sessionId === sessionId);
+        return matching.sort((a, b) => b.createdAt - a.createdAt)[0] || null;
+      }
+    },
+    submissions: {
+      insert: (sub) => {
+        const exists = submissions.some(s => s.sessionId === sub.sessionId && s.studentId === sub.studentId);
+        if (exists) throw new Error('DUPLICATE');
+        submissions.push(sub);
+      },
+      countForSession: (sessionId) => submissions.filter(s => s.sessionId === sessionId).length,
+      recentForSession: (sessionId, limit) =>
+        submissions.filter(s => s.sessionId === sessionId).sort((a, b) => b.createdAt - a.createdAt).slice(0, limit),
+      forSession: (sessionId) => submissions.filter(s => s.sessionId === sessionId)
+    }
+  };
+}
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
-app.use(express.static(path.join(__dirname, 'public')));
 
+// Serve static files reliably in Vercel using process.cwd()
+const publicPath = path.join(process.cwd(), 'public');
+app.use(express.static(publicPath));
+
+// Root route directly serving instructor.html
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'instructor.html'));
+  res.sendFile(path.join(publicPath, 'instructor.html'), (err) => {
+    if (err) {
+      // Fallback if public/ is in project root root directory instead
+      res.sendFile(path.join(process.cwd(), 'instructor.html'), (fallbackErr) => {
+        if (fallbackErr) {
+          res.status(500).send('instructor.html not found in public/ or root directory.');
+        }
+      });
+    }
+  });
 });
 
 // ---- Config ----
-const TOKEN_ACTIVE_SECONDS = 30;   // how long a QR is the "current" one on screen
-const SCAN_GRACE_SECONDS = 120;    // how long a student has to finish the form after scanning
+const TOKEN_ACTIVE_SECONDS = 30;
+const SCAN_GRACE_SECONDS = 120;
 const PORT = process.env.PORT || 3000;
 
 app.set('trust proxy', true);
@@ -107,7 +161,6 @@ app.get('/s/:token', (req, res) => {
   if (!session || t > session.endsAt) return errorPage('Attendance for this class has closed.');
 
   if (!token.consumed) {
-    // Genuinely the first person to open this code.
     if (t > token.expiresAt) {
       return errorPage('This QR code has expired. Please scan the current code on the screen.');
     }
@@ -121,14 +174,12 @@ app.get('/s/:token', (req, res) => {
     return res.send(renderForm(token.token));
   }
 
-  // Already consumed — is this the same browser (a refresh), or someone else?
   const isOwner = ownerSecretFromCookie && ownerSecretFromCookie === token.ownerSecret;
 
   if (!isOwner) {
     return errorPage('This QR code has already been used. Please scan the current code on the screen.');
   }
 
-  // It's the same student reloading their own page.
   if (token.submitted) {
     return res.send(renderAlreadySubmitted());
   }
@@ -189,36 +240,40 @@ app.post('/api/submit', (req, res) => {
 
 // ============ INSTRUCTOR: export to Excel ============
 app.get('/api/sessions/:id/export', async (req, res) => {
-  const session = db.sessions.get(req.params.id);
-  if (!session) return res.status(404).send('Session not found');
-  if (session.adminKey !== req.query.adminKey) return res.status(403).send('Invalid admin key');
+  try {
+    const session = db.sessions.get(req.params.id);
+    if (!session) return res.status(404).send('Session not found');
+    if (session.adminKey !== req.query.adminKey) return res.status(403).send('Invalid admin key');
 
-  const rows = db.submissions.forSession(session.id);
+    const rows = db.submissions.forSession(session.id);
 
-  const workbook = new ExcelJS.Workbook();
-  const sheet = workbook.addWorksheet('Attendance');
-  sheet.columns = [
-    { header: 'Name', key: 'name', width: 18 },
-    { header: 'Surname', key: 'surname', width: 18 },
-    { header: 'Student ID', key: 'studentId', width: 18 },
-    { header: 'Submitted At', key: 'submittedAt', width: 22 },
-  ];
-  sheet.getRow(1).font = { bold: true };
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Attendance');
+    sheet.columns = [
+      { header: 'Name', key: 'name', width: 18 },
+      { header: 'Surname', key: 'surname', width: 18 },
+      { header: 'Student ID', key: 'studentId', width: 18 },
+      { header: 'Submitted At', key: 'submittedAt', width: 22 },
+    ];
+    sheet.getRow(1).font = { bold: true };
 
-  rows.forEach(r => {
-    sheet.addRow({
-      name: r.name,
-      surname: r.surname,
-      studentId: r.studentId,
-      submittedAt: new Date(r.createdAt).toLocaleString(),
+    rows.forEach(r => {
+      sheet.addRow({
+        name: r.name,
+        surname: r.surname,
+        studentId: r.studentId,
+        submittedAt: new Date(r.createdAt).toLocaleString(),
+      });
     });
-  });
 
-  const safeName = session.name.replace(/[^a-z0-9]/gi, '_');
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="${safeName}_attendance.xlsx"`);
-  await workbook.xlsx.write(res);
-  res.end();
+    const safeName = session.name.replace(/[^a-z0-9]/gi, '_');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}_attendance.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    res.status(500).send('Error generating export file');
+  }
 });
 
 function renderAlreadySubmitted() {
@@ -302,13 +357,12 @@ function sharedStyles() {
 }
 
 function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {
-    console.log(`Attendance app running at http://localhost:${PORT}`);
-    console.log(`Open http://localhost:${PORT}/instructor.html to create a session.`);
+    console.log(`Attendance app running at http://localhost:${PORT}/instructor.html`);
   });
 }
 
