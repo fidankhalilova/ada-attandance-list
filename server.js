@@ -301,7 +301,10 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-app.listen(PORT, () => {
-  console.log(`Attendance app running at http://localhost:${PORT}`);
-  console.log(`Open http://localhost:${PORT}/instructor.html to create a session.`);
-});
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(PORT, () => {
+    console.log(`Attendance app running at http://localhost:${PORT}`);
+  });
+}
+
+module.exports = app;
