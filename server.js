@@ -13,6 +13,10 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'instructor.html'));
+});
+
 // ---- Config ----
 const TOKEN_ACTIVE_SECONDS = 30;   // how long a QR is the "current" one on screen
 const SCAN_GRACE_SECONDS = 120;    // how long a student has to finish the form after scanning
@@ -26,10 +30,6 @@ function genKey() { return crypto.randomBytes(16).toString('hex'); }
 function baseUrl(req) {
   return process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
 }
-
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'instructor.html'));
-});
 
 // ============ INSTRUCTOR: create a session ============
 app.post('/api/sessions', (req, res) => {

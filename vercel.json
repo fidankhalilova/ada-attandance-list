@@ -8,20 +8,8 @@
   ],
   "routes": [
     {
-      "src": "/",
-      "dest": "public/instructor.html"
-    },
-    {
-      "src": "/api/(.*)",
-      "dest": "server.js"
-    },
-    {
-      "src": "/s/(.*)",
-      "dest": "server.js"
-    },
-    {
       "src": "/(.*)",
-      "dest": "public/$1"
+      "dest": "server.js"
     }
   ]
 }
