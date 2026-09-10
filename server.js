@@ -4,7 +4,6 @@ const crypto = require('crypto');
 const QRCode = require('qrcode');
 const ExcelJS = require('exceljs');
 const cookieParser = require('cookie-parser');
-const { v4: uuidv4 } = require('uuid');
 const db = require('./db');
 
 const app = express();
@@ -41,7 +40,7 @@ app.post('/api/sessions', (req, res) => {
     if (!name || !durationMinutes) {
       return res.status(400).json({ error: 'name and durationMinutes are required' });
     }
-    const id = uuidv4();
+    const id = crypto.randomUUID();
     const adminKey = genKey();
     const createdAt = now();
     const endsAt = createdAt + Math.round(Number(durationMinutes) * 60 * 1000);
@@ -180,7 +179,7 @@ app.post('/api/submit', (req, res) => {
   const ip = req.ip;
 
   const sub = {
-    id: uuidv4(),
+    id: crypto.randomUUID(),
     sessionId: session.id,
     studentId: cleanStudentId,
     name: name.trim(),
