@@ -6,13 +6,12 @@ const ExcelJS = require('exceljs');
 const cookieParser = require('cookie-parser');
 const { v4: uuidv4 } = require('uuid');
 
-// ---- Safe Database Initialization ----
+// ---- Database Initialization ----
+// Vercel serverless functions run in a read-only environment.
+// Use in-memory database on Vercel, and require('./db') locally.
 let db;
-try {
-  db = require('./db');
-} catch (err) {
-  console.warn('Custom db.js failed to load. Falling back to in-memory store for serverless compatibility.');
 
+if (process.env.VERCEL) {
   const sessions = new Map();
   const tokens = new Map();
   const submissions = [];
@@ -46,6 +45,12 @@ try {
       forSession: (sessionId) => submissions.filter(s => s.sessionId === sessionId)
     }
   };
+} else {
+  try {
+    db = require('./db');
+  } catch (e) {
+    console.error('Failed to load local db.js:', e);
+  }
 }
 
 const app = express();
@@ -53,18 +58,20 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// Serve static files reliably in Vercel using process.cwd()
+// Serve static files reliably using process.cwd()
 const publicPath = path.join(process.cwd(), 'public');
 app.use(express.static(publicPath));
 
-// Root route directly serving instructor.html
+// Root route serving instructor.html
 app.get('/', (req, res) => {
-  res.sendFile(path.join(publicPath, 'instructor.html'), (err) => {
+  const primaryPath = path.join(publicPath, 'instructor.html');
+  const fallbackPath = path.join(process.cwd(), 'instructor.html');
+
+  res.sendFile(primaryPath, (err) => {
     if (err) {
-      // Fallback if public/ is in project root root directory instead
-      res.sendFile(path.join(process.cwd(), 'instructor.html'), (fallbackErr) => {
+      res.sendFile(fallbackPath, (fallbackErr) => {
         if (fallbackErr) {
-          res.status(500).send('instructor.html not found in public/ or root directory.');
+          res.status(500).send('instructor.html file not found.');
         }
       });
     }
@@ -360,7 +367,7 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-if (process.env.NODE_ENV !== 'production') {
+if (!process.env.VERCEL && process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {
     console.log(`Attendance app running at http://localhost:${PORT}/instructor.html`);
   });
