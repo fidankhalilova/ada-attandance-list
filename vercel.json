@@ -8,6 +8,10 @@
   ],
   "routes": [
     {
+      "src": "/",
+      "dest": "public/instructor.html"
+    },
+    {
       "src": "/api/(.*)",
       "dest": "server.js"
     },

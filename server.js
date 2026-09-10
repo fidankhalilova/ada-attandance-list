@@ -27,6 +27,10 @@ function baseUrl(req) {
   return process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
 }
 
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'instructor.html'));
+});
+
 // ============ INSTRUCTOR: create a session ============
 app.post('/api/sessions', (req, res) => {
   const { name, durationMinutes } = req.body;
@@ -304,6 +308,7 @@ function escapeHtml(s) {
 if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {
     console.log(`Attendance app running at http://localhost:${PORT}`);
+    console.log(`Open http://localhost:${PORT}/instructor.html to create a session.`);
   });
 }
 
