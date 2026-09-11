@@ -15,6 +15,12 @@ app.use(cookieParser());
 const publicPath = path.join(process.cwd(), 'public');
 app.use(express.static(publicPath));
 
+// Root route: send visitors straight to the instructor dashboard.
+// A redirect touches no files at all, so it can't crash on Vercel's
+// read-only filesystem the way res.sendFile() could. On Vercel itself,
+// vercel.json also redirects "/" -> "/instructor.html" at the CDN edge,
+// before this route is even reached; this handler is the local-dev/
+// fallback path.
 app.get('/', (req, res) => {
   res.redirect('/instructor.html');
 });
@@ -34,7 +40,7 @@ function baseUrl(req) {
 }
 
 // INSTRUCTOR: create a session
-app.post('/api/sessions', (req, res) => {
+app.post('/api/sessions', async (req, res) => {
   try {
     const { name, durationMinutes } = req.body;
     if (!name || !durationMinutes) {
@@ -46,7 +52,7 @@ app.post('/api/sessions', (req, res) => {
     const endsAt = createdAt + Math.round(Number(durationMinutes) * 60 * 1000);
 
     const session = { id, name, adminKey, createdAt, endsAt };
-    db.sessions.create(session);
+    await db.sessions.create(session);
 
     res.json({ sessionId: id, adminKey, endsAt });
   } catch (e) {
@@ -55,9 +61,9 @@ app.post('/api/sessions', (req, res) => {
 });
 
 // INSTRUCTOR: get/rotate current QR token
-app.get('/api/sessions/:id/token', (req, res) => {
+app.get('/api/sessions/:id/token', async (req, res) => {
   try {
-    const session = db.sessions.get(req.params.id);
+    const session = await db.sessions.get(req.params.id);
     if (!session) return res.status(404).json({ error: 'session not found' });
     if (session.adminKey !== req.query.adminKey) return res.status(403).json({ error: 'invalid admin key' });
 
@@ -66,13 +72,13 @@ app.get('/api/sessions/:id/token', (req, res) => {
       return res.json({ ended: true });
     }
 
-    let token = db.tokens.latestForSession(session.id);
+    let token = await db.tokens.latestForSession(session.id);
 
     if (!token || t > token.expiresAt) {
       const tokenStr = crypto.randomBytes(12).toString('hex');
       const expiresAt = t + TOKEN_ACTIVE_SECONDS * 1000;
       token = { token: tokenStr, sessionId: session.id, createdAt: t, expiresAt, consumed: false, consumedAt: null, submitted: false };
-      db.tokens.create(token);
+      await db.tokens.create(token);
     }
 
     const scanUrl = `${baseUrl(req)}/s/${token.token}`;
@@ -91,14 +97,15 @@ app.get('/api/sessions/:id/token', (req, res) => {
 });
 
 // INSTRUCTOR: live stats
-app.get('/api/sessions/:id/stats', (req, res) => {
+app.get('/api/sessions/:id/stats', async (req, res) => {
   try {
-    const session = db.sessions.get(req.params.id);
+    const session = await db.sessions.get(req.params.id);
     if (!session) return res.status(404).json({ error: 'session not found' });
     if (session.adminKey !== req.query.adminKey) return res.status(403).json({ error: 'invalid admin key' });
 
-    const count = db.submissions.countForSession(session.id);
-    const recent = db.submissions.recentForSession(session.id, 10)
+    const count = await db.submissions.countForSession(session.id);
+    const recentRaw = await db.submissions.recentForSession(session.id, 10);
+    const recent = recentRaw
       .map(s => ({ name: s.name, surname: s.surname, studentId: s.studentId, createdAt: s.createdAt }));
     res.json({ count, recent, sessionName: session.name, endsAt: session.endsAt });
   } catch (e) {
@@ -107,10 +114,10 @@ app.get('/api/sessions/:id/stats', (req, res) => {
 });
 
 // STUDENT: open a scanned link
-app.get('/s/:token', (req, res) => {
+app.get('/s/:token', async (req, res) => {
   try {
     const t = now();
-    const token = db.tokens.get(req.params.token);
+    const token = await db.tokens.get(req.params.token);
 
     const errorPage = (message) => res.send(renderError(message));
     const cookieName = `att_${req.params.token}`;
@@ -118,7 +125,7 @@ app.get('/s/:token', (req, res) => {
 
     if (!token) return errorPage('This QR code is invalid.');
 
-    const session = db.sessions.get(token.sessionId);
+    const session = await db.sessions.get(token.sessionId);
     if (!session || t > session.endsAt) return errorPage('Attendance for this class has closed.');
 
     if (!token.consumed) {
@@ -126,7 +133,7 @@ app.get('/s/:token', (req, res) => {
         return errorPage('This QR code has expired. Please scan the current code on the screen.');
       }
       const ownerSecret = crypto.randomBytes(8).toString('hex');
-      db.tokens.update(token.token, { consumed: true, consumedAt: t, ownerSecret });
+      await db.tokens.update(token.token, { consumed: true, consumedAt: t, ownerSecret });
       res.cookie(cookieName, ownerSecret, {
         httpOnly: true,
         sameSite: 'lax',
@@ -154,62 +161,66 @@ app.get('/s/:token', (req, res) => {
 });
 
 // STUDENT: submit attendance
-app.post('/api/submit', (req, res) => {
-  const { token, name, surname, studentId } = req.body;
-  const t = now();
-
-  if (!token || !name || !surname || !studentId) {
-    return res.status(400).json({ error: 'All fields are required.' });
-  }
-
-  const tokenRow = db.tokens.get(token);
-  if (!tokenRow) return res.status(400).json({ error: 'Invalid session link.' });
-  if (!tokenRow.consumed) return res.status(400).json({ error: 'Please open this form by scanning the QR code again.' });
-  if (tokenRow.submitted) return res.status(400).json({ error: 'This code has already been used to submit attendance.' });
-  if (t > tokenRow.consumedAt + SCAN_GRACE_SECONDS * 1000) {
-    return res.status(400).json({ error: 'Time expired. Please scan the current QR code on the screen and try again.' });
-  }
-
-  const session = db.sessions.get(tokenRow.sessionId);
-  if (!session || t > session.endsAt) {
-    return res.status(400).json({ error: 'Attendance for this class has closed.' });
-  }
-
-  const cleanStudentId = String(studentId).trim();
-  const ip = req.ip;
-
-  const sub = {
-    id: crypto.randomUUID(),
-    sessionId: session.id,
-    studentId: cleanStudentId,
-    name: name.trim(),
-    surname: surname.trim(),
-    token,
-    ip,
-    createdAt: t,
-  };
-
+app.post('/api/submit', async (req, res) => {
   try {
-    db.submissions.insert(sub);
-  } catch (e) {
-    if (e.message === 'DUPLICATE') {
-      return res.status(409).json({ error: 'This Student ID has already submitted attendance for this session.' });
-    }
-    return res.status(500).json({ error: 'Something went wrong. Please try again.' });
-  }
+    const { token, name, surname, studentId } = req.body;
+    const t = now();
 
-  db.tokens.update(token, { submitted: true });
-  res.json({ success: true });
+    if (!token || !name || !surname || !studentId) {
+      return res.status(400).json({ error: 'All fields are required.' });
+    }
+
+    const tokenRow = await db.tokens.get(token);
+    if (!tokenRow) return res.status(400).json({ error: 'Invalid session link.' });
+    if (!tokenRow.consumed) return res.status(400).json({ error: 'Please open this form by scanning the QR code again.' });
+    if (tokenRow.submitted) return res.status(400).json({ error: 'This code has already been used to submit attendance.' });
+    if (t > tokenRow.consumedAt + SCAN_GRACE_SECONDS * 1000) {
+      return res.status(400).json({ error: 'Time expired. Please scan the current QR code on the screen and try again.' });
+    }
+
+    const session = await db.sessions.get(tokenRow.sessionId);
+    if (!session || t > session.endsAt) {
+      return res.status(400).json({ error: 'Attendance for this class has closed.' });
+    }
+
+    const cleanStudentId = String(studentId).trim();
+    const ip = req.ip;
+
+    const sub = {
+      id: crypto.randomUUID(),
+      sessionId: session.id,
+      studentId: cleanStudentId,
+      name: name.trim(),
+      surname: surname.trim(),
+      token,
+      ip,
+      createdAt: t,
+    };
+
+    try {
+      await db.submissions.insert(sub);
+    } catch (e) {
+      if (e.message === 'DUPLICATE') {
+        return res.status(409).json({ error: 'This Student ID has already submitted attendance for this session.' });
+      }
+      return res.status(500).json({ error: 'Something went wrong. Please try again.' });
+    }
+
+    await db.tokens.update(token, { submitted: true });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
 });
 
 // INSTRUCTOR: export to Excel
 app.get('/api/sessions/:id/export', async (req, res) => {
   try {
-    const session = db.sessions.get(req.params.id);
+    const session = await db.sessions.get(req.params.id);
     if (!session) return res.status(404).send('Session not found');
     if (session.adminKey !== req.query.adminKey) return res.status(403).send('Invalid admin key');
 
-    const rows = db.submissions.forSession(session.id);
+    const rows = await db.submissions.forSession(session.id);
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Attendance');
@@ -260,6 +271,10 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// Catch-all error handler. Without this, an error thrown in middleware
+// (bad JSON body, cookie parsing, etc.) or an error passed to next(err)
+// can leave the function in an undefined state instead of a clean 500.
+// This must be defined last, after all routes.
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   if (res.headersSent) return next(err);
